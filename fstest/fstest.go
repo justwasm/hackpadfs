@@ -234,8 +234,9 @@ func runFS(tb testing.TB, options FSOptions) {
 	runner.Run("fs.RemoveAll", TestRemoveAll)
 	runner.Run("fs.Rename", TestRename)
 	runner.Run("fs.Stat", TestStat)
+	runner.Run("fs.Symlink", TestSymlink)
+	runner.Run("fs.Lstat", TestLstat)
 	runner.Run("fs.WriteFile", TestWriteFile)
-	// TODO Symlink
 
 	runner.Run("fs_concurrent.Create", TestConcurrentCreate)
 	runner.Run("fs_concurrent.OpenFileCreate", TestConcurrentOpenFileCreate)

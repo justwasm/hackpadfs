@@ -992,10 +992,15 @@ func TestChmod(tb testing.TB, o FSOptions) {
 			Name: "foo",
 			Mode: 0o755,
 		}, asQuickInfo(linkInfo))
+		quick := asQuickInfo(info)
+		if _, ok := fs.(hackpadfs.StatFS); ok {
+			assert.Equal(tb, "bar", quick.Name)
+		}
+		quick.Name = "bar"
 		o.assertEqualQuickInfo(tb, quickInfo{
 			Name: "bar",
 			Mode: 0o755,
-		}, asQuickInfo(info))
+		}, quick)
 	})
 }
 
@@ -1163,7 +1168,209 @@ func TestReadDir(tb testing.TB, o FSOptions) {
 	})
 }
 
-// TODO Symlink
+// TestSymlink tests Symlink, Readlink, and Stat behavior with symlinks.
+func TestSymlink(tb testing.TB, o FSOptions) {
+	o.tbRun(tb, "symlink to file", func(tb testing.TB) {
+		setupFS, commit := o.Setup.FS(tb)
+		if _, ok := setupFS.(hackpadfs.SymlinkFS); !ok {
+			tb.Skip("FS is not a SymlinkFS")
+		}
+		f, err := hackpadfs.Create(setupFS, "foo")
+		if assert.NoError(tb, err) {
+			assert.NoError(tb, f.Close())
+		}
+		assert.NoError(tb, hackpadfs.Symlink(setupFS, "foo", "bar"))
+
+		fs := commit()
+
+		// Stat follows symlinks
+		info, err := hackpadfs.Stat(fs, "bar")
+		assert.NoError(tb, err)
+		if _, ok := fs.(hackpadfs.StatFS); ok {
+			assert.Equal(tb, "bar", info.Name())
+		}
+		assert.Equal(tb, false, info.IsDir())
+
+		// Lstat returns symlink info
+		if lstatFS, ok := fs.(hackpadfs.LstatFS); ok {
+			lstatInfo, err := lstatFS.Lstat("bar")
+			assert.NoError(tb, err)
+			assert.Equal(tb, "bar", lstatInfo.Name())
+			assert.NotZero(tb, lstatInfo.Mode()&hackpadfs.ModeSymlink)
+		}
+	})
+
+	o.tbRun(tb, "readlink", func(tb testing.TB) {
+		setupFS, commit := o.Setup.FS(tb)
+		if _, ok := setupFS.(hackpadfs.SymlinkFS); !ok {
+			tb.Skip("FS is not a SymlinkFS")
+		}
+		f, err := hackpadfs.Create(setupFS, "foo")
+		if assert.NoError(tb, err) {
+			assert.NoError(tb, f.Close())
+		}
+		assert.NoError(tb, hackpadfs.Symlink(setupFS, "foo", "bar"))
+
+		fs := commit()
+
+		if readlinkFS, ok := fs.(hackpadfs.ReadlinkFS); ok {
+			target, err := readlinkFS.Readlink("bar")
+			assert.NoError(tb, err)
+			assert.Equal(tb, "foo", target)
+		}
+	})
+
+	o.tbRun(tb, "open through symlink", func(tb testing.TB) {
+		setupFS, commit := o.Setup.FS(tb)
+		if _, ok := setupFS.(hackpadfs.SymlinkFS); !ok {
+			tb.Skip("FS is not a SymlinkFS")
+		}
+		err := hackpadfs.WriteFullFile(setupFS, "foo", []byte("hello world"), 0o644)
+		assert.NoError(tb, err)
+		assert.NoError(tb, hackpadfs.Symlink(setupFS, "foo", "bar"))
+
+		fs := commit()
+
+		contents, err := hackpadfs.ReadFile(fs, "bar")
+		assert.NoError(tb, err)
+		assert.Equal(tb, "hello world", string(contents))
+	})
+
+	o.tbRun(tb, "symlink to dir", func(tb testing.TB) {
+		setupFS, commit := o.Setup.FS(tb)
+		if _, ok := setupFS.(hackpadfs.SymlinkFS); !ok {
+			tb.Skip("FS is not a SymlinkFS")
+		}
+		err := setupFS.Mkdir("mydir", 0o755)
+		assert.NoError(tb, err)
+		f, err := hackpadfs.Create(setupFS, "mydir/foo")
+		if assert.NoError(tb, err) {
+			assert.NoError(tb, f.Close())
+		}
+		assert.NoError(tb, hackpadfs.Symlink(setupFS, "mydir", "bar"))
+
+		fs := commit()
+
+		entries, err := hackpadfs.ReadDir(fs, "bar")
+		assert.NoError(tb, err)
+		if assert.Equal(tb, 1, len(entries)) {
+			assert.Equal(tb, "foo", entries[0].Name())
+		}
+	})
+
+	o.tbRun(tb, "symlink to non-existent target", func(tb testing.TB) {
+		setupFS, commit := o.Setup.FS(tb)
+		if _, ok := setupFS.(hackpadfs.SymlinkFS); !ok {
+			tb.Skip("FS is not a SymlinkFS")
+		}
+		assert.NoError(tb, hackpadfs.Symlink(setupFS, "nonexistent", "bar"))
+
+		fs := commit()
+
+		_, err := hackpadfs.Stat(fs, "bar")
+		skipNotImplemented(tb, err)
+		if assert.IsType(tb, (*hackpadfs.PathError)(nil), err) {
+			pathErr := err.(*hackpadfs.PathError)
+			assert.Equal(tb, "bar", pathErr.Path)
+			assert.ErrorIs(tb, hackpadfs.ErrNotExist, pathErr)
+		}
+	})
+
+	o.tbRun(tb, "symlink already exists", func(tb testing.TB) {
+		setupFS, commit := o.Setup.FS(tb)
+		if _, ok := setupFS.(hackpadfs.SymlinkFS); !ok {
+			tb.Skip("FS is not a SymlinkFS")
+		}
+		f, err := hackpadfs.Create(setupFS, "foo")
+		if assert.NoError(tb, err) {
+			assert.NoError(tb, f.Close())
+		}
+
+		fs := commit()
+		err = hackpadfs.Symlink(fs, "target", "foo")
+		skipNotImplemented(tb, err)
+		if assert.IsType(tb, (*hackpadfs.LinkError)(nil), err) {
+			linkErr := err.(*hackpadfs.LinkError)
+			assert.Equal(tb, "symlink", linkErr.Op)
+			assert.Equal(tb, "target", linkErr.Old)
+			assert.Equal(tb, "foo", linkErr.New)
+			assert.ErrorIs(tb, hackpadfs.ErrExist, linkErr)
+		}
+	})
+}
+
+// TestLstat tests Lstat behavior.
+func TestLstat(tb testing.TB, o FSOptions) {
+	o.tbRun(tb, "lstat a file", func(tb testing.TB) {
+		setupFS, commit := o.Setup.FS(tb)
+		f, err := hackpadfs.Create(setupFS, "foo")
+		if assert.NoError(tb, err) {
+			assert.NoError(tb, f.Close())
+		}
+		assert.NoError(tb, hackpadfs.Chmod(setupFS, "foo", 0o755))
+
+		fs := commit()
+		lstatFS, ok := fs.(hackpadfs.LstatFS)
+		if !ok {
+			tb.Skip("FS does not implement LstatFS")
+		}
+		lstatInfo, err := lstatFS.Lstat("foo")
+		assert.NoError(tb, err)
+		o.assertEqualQuickInfo(tb, quickInfo{
+			Name: "foo",
+			Mode: 0o755,
+		}, asQuickInfo(lstatInfo))
+		assert.NotPanics(tb, func() {
+			_ = lstatInfo.Sys()
+		})
+	})
+
+	o.tbRun(tb, "lstat vs stat on symlink", func(tb testing.TB) {
+		setupFS, commit := o.Setup.FS(tb)
+		if _, ok := setupFS.(hackpadfs.SymlinkFS); !ok {
+			tb.Skip("FS is not a SymlinkFS")
+		}
+		f, err := hackpadfs.Create(setupFS, "foo")
+		if assert.NoError(tb, err) {
+			assert.NoError(tb, f.Close())
+		}
+		assert.NoError(tb, hackpadfs.Symlink(setupFS, "foo", "bar"))
+
+		fs := commit()
+		lstatFS, ok := fs.(hackpadfs.LstatFS)
+		if !ok {
+			tb.Skip("FS does not implement LstatFS")
+		}
+
+		// Lstat should return symlink info, not target info
+		lstatInfo, err := lstatFS.Lstat("bar")
+		assert.NoError(tb, err)
+		assert.Equal(tb, "bar", lstatInfo.Name())
+		assert.NotZero(tb, lstatInfo.Mode()&hackpadfs.ModeSymlink)
+
+		// Stat should follow the symlink
+		statInfo, err := hackpadfs.Stat(fs, "bar")
+		assert.NoError(tb, err)
+		assert.Equal(tb, "bar", statInfo.Name())
+		assert.Zero(tb, statInfo.Mode()&hackpadfs.ModeSymlink)
+	})
+
+	o.tbRun(tb, "lstat not exists", func(tb testing.TB) {
+		_, commit := o.Setup.FS(tb)
+		fs := commit()
+		lstatFS, ok := fs.(hackpadfs.LstatFS)
+		if !ok {
+			tb.Skip("FS does not implement LstatFS")
+		}
+		_, err := lstatFS.Lstat("foo")
+		if assert.IsType(tb, (*hackpadfs.PathError)(nil), err) {
+			err := err.(*hackpadfs.PathError)
+			assert.Equal(tb, "lstat", err.Op)
+			assert.Equal(tb, "foo", err.Path)
+			assert.ErrorIs(tb, hackpadfs.ErrNotExist, err)
+		}
+	})
+}
 
 func TestWriteFile(tb testing.TB, o FSOptions) {
 	o.tbRun(tb, "not exists", func(tb testing.TB) {

@@ -53,18 +53,29 @@ func buildTarFromFS(tb testing.TB, src hackpadfs.FS) (io.Reader, error) {
 	archive := tar.NewWriter(&buf)
 	defer func() { assert.NoError(tb, archive.Close()) }()
 
-	err := hackpadfs.WalkDir(src, ".", copyTarWalk(src, archive))
-	return &buf, fserrors.WithMessage(err, "Failed building tar from FS walk")
-}
-
-func copyTarWalk(src hackpadfs.FS, archive *tar.Writer) hackpadfs.WalkDirFunc {
-	return func(path string, dir hackpadfs.DirEntry, err error) error {
+	var symlinks []func(*tar.Writer) error
+	err := hackpadfs.WalkDir(src, ".", func(path string, dir hackpadfs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		info, err := dir.Info()
 		if err != nil {
 			return err
+		}
+		if info.Mode()&hackpadfs.ModeSymlink != 0 {
+			linkTarget, err := hackpadfs.Readlink(src, path)
+			if err != nil {
+				return err
+			}
+			symlinks = append(symlinks, func(archive *tar.Writer) error {
+				header, err := tar.FileInfoHeader(info, linkTarget)
+				if err != nil {
+					return err
+				}
+				header.Name = path
+				return archive.WriteHeader(header)
+			})
+			return nil
 		}
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
@@ -84,7 +95,17 @@ func copyTarWalk(src hackpadfs.FS, archive *tar.Writer) hackpadfs.WalkDirFunc {
 		}
 		_, err = archive.Write(fileBytes)
 		return err
+	})
+	if err != nil {
+		return &buf, fserrors.WithMessage(err, "Failed building tar from FS walk")
 	}
+	// Write all symlinks after their targets to ensure correct tar processing order
+	for _, writeSymlink := range symlinks {
+		if err := writeSymlink(archive); err != nil {
+			return &buf, err
+		}
+	}
+	return &buf, nil
 }
 
 // TestNewTarFromFS is a sanity check on the constructor we use in fstest. Just make sure it behaves normally for simple cases.

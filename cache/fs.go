@@ -121,6 +121,17 @@ func (fs *ReadOnlyFS) Stat(name string) (hackpadfs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Preserve the queried name (matching os.Stat behavior and handling symlinks)
+	if info.Name() != path.Base(name) {
+		info = namedFileInfo{FileInfo: info, name: path.Base(name)}
+	}
 	fs.cacheInfo.Store(name, info)
 	return info, nil
 }
+
+type namedFileInfo struct {
+	hackpadfs.FileInfo
+	name string
+}
+
+func (n namedFileInfo) Name() string { return n.name }

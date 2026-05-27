@@ -141,3 +141,18 @@ func (fs *FS) Chmod(name string, mode hackpadfs.FileMode) error {
 func (fs *FS) Chtimes(name string, atime time.Time, mtime time.Time) error {
 	return fs.kv.Chtimes(name, atime, mtime)
 }
+
+// Symlink implements hackpadfs.SymlinkFS
+func (fs *FS) Symlink(oldname, newname string) error {
+	return fs.kv.Symlink(oldname, newname)
+}
+
+// Lstat implements hackpadfs.LstatFS
+func (fs *FS) Lstat(name string) (hackpadfs.FileInfo, error) {
+	return fs.kv.Lstat(name)
+}
+
+// Readlink implements hackpadfs.ReadlinkFS
+func (fs *FS) Readlink(name string) (string, error) {
+	return fs.kv.Readlink(name)
+}

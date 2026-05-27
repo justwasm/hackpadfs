@@ -217,6 +217,17 @@ func (fs *ReaderFS) readProcessFile(
 		return nil
 	}
 
+	if header.Typeflag == tar.TypeSymlink {
+		if symlinkFS, ok := fs.unarchiveFS.(hackpadfs.SymlinkFS); ok {
+			err := symlinkFS.Symlink(header.Linkname, p)
+			if err != nil {
+				return fserrors.WithMessage(err, "creating symlink")
+			}
+		}
+		fs.ps.Emit(p)
+		return nil
+	}
+
 	reader := fullReader{r} // fullReader: call f.Write as few times as possible, since large files can be expensive to write in many batches (Hackpad JS Blobs)
 	// read once. if we reached EOF, then write it to fs asynchronously
 	smallBuf := smallPool.Wait()

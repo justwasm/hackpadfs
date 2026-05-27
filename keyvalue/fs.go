@@ -12,6 +12,8 @@ import (
 
 const chmodBits = hackpadfs.ModePerm | hackpadfs.ModeSetuid | hackpadfs.ModeSetgid | hackpadfs.ModeSticky // Only a subset of bits are allowed to be changed. Documented under os.Chmod()
 
+const maxSymlinkDepth = 40
+
 // FS wraps a Store as a file system.
 type FS struct {
 	store *transactionOnly
@@ -189,13 +191,36 @@ func (fs *FS) Open(name string) (hackpadfs.File, error) {
 }
 
 // OpenFile implements hackpadfs.OpenFileFS
-func (fs *FS) OpenFile(name string, flag int, perm hackpadfs.FileMode) (afFile hackpadfs.File, retErr error) {
+func (fs *FS) OpenFile(name string, flag int, perm hackpadfs.FileMode) (hackpadfs.File, error) {
+	return fs.openFile(name, flag, perm, 0)
+}
+
+func (fs *FS) openFile(name string, flag int, perm hackpadfs.FileMode, depth int) (afFile hackpadfs.File, retErr error) {
+	if depth >= maxSymlinkDepth {
+		return nil, &hackpadfs.PathError{Op: "open", Path: name, Err: hackpadfs.ErrInvalid}
+	}
 	paths := []string{name}
 	if flag&hackpadfs.FlagCreate != 0 {
 		paths = append(paths, path.Dir(name))
 	}
 	files, errs := fs.getFiles(paths...)
 	storeFile, err := files[0], errs[0]
+
+	// Follow symlinks when opening an existing symlink entry
+	if err == nil && storeFile.Mode()&hackpadfs.ModeSymlink != 0 {
+		data, readErr := storeFile.Data()
+		if readErr != nil {
+			return nil, &hackpadfs.PathError{Op: "open", Path: name, Err: readErr}
+		}
+		target := string(data.Bytes())
+		resolved := path.Join(path.Dir(name), target)
+		if !hackpadfs.ValidPath(resolved) {
+			return nil, &hackpadfs.PathError{Op: "open", Path: name, Err: hackpadfs.ErrInvalid}
+		}
+		file, openErr := fs.openFile(resolved, flag, perm, depth+1)
+		return file, normalizePathError("open", name, openErr)
+	}
+
 	switch {
 	case err == nil:
 		if storeFile.info().IsDir() && flag&(hackpadfs.FlagCreate|hackpadfs.FlagWriteOnly) != 0 {
@@ -310,16 +335,149 @@ func (fs *FS) Rename(oldname, newname string) error {
 
 // Stat implements hackpadfs.StatFS
 func (fs *FS) Stat(name string) (hackpadfs.FileInfo, error) {
+	info, err := fs.statFollow(name, 0)
+	if err != nil {
+		return nil, err
+	}
+	// Return a FileInfo with the queried name (not the resolved target name), matching os.Stat behavior
+	return namedFileInfo{FileInfo: info, name: path.Base(name)}, nil
+}
+
+// namedFileInfo wraps a FileInfo and overrides the Name() method.
+type namedFileInfo struct {
+	hackpadfs.FileInfo
+	name string
+}
+
+func (n namedFileInfo) Name() string { return n.name }
+
+func normalizePathError(op, name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var pathErr *hackpadfs.PathError
+	if errors.As(err, &pathErr) {
+		return &hackpadfs.PathError{Op: op, Path: name, Err: pathErr.Err}
+	}
+	return err
+}
+
+func (fs *FS) statFollow(name string, depth int) (hackpadfs.FileInfo, error) {
+	return fs.statFollowRequested(name, name, depth)
+}
+
+func (fs *FS) statFollowRequested(name, requested string, depth int) (hackpadfs.FileInfo, error) {
+	if depth > maxSymlinkDepth {
+		return nil, &hackpadfs.PathError{Op: "stat", Path: requested, Err: hackpadfs.ErrInvalid}
+	}
 	file, err := fs.getFile(name)
 	if err != nil {
-		return nil, fs.wrapperErr("stat", name, err)
+		return nil, fs.wrapperErr("stat", requested, err)
+	}
+	if file.Mode()&hackpadfs.ModeSymlink != 0 {
+		data, err := file.Data()
+		if err != nil {
+			return nil, fs.wrapperErr("stat", requested, err)
+		}
+		target := string(data.Bytes())
+		resolved := path.Join(path.Dir(name), target)
+		if !hackpadfs.ValidPath(resolved) {
+			return nil, &hackpadfs.PathError{Op: "stat", Path: requested, Err: hackpadfs.ErrInvalid}
+		}
+		info, err := fs.statFollowRequested(resolved, requested, depth+1)
+		if err != nil {
+			return nil, normalizePathError("stat", requested, err)
+		}
+		return info, nil
 	}
 	return file.info(), nil
 }
 
+// Lstat implements hackpadfs.LstatFS
+func (fs *FS) Lstat(name string) (hackpadfs.FileInfo, error) {
+	file, err := fs.getFile(name)
+	if err != nil {
+		return nil, fs.wrapperErr("lstat", name, err)
+	}
+	return file.info(), nil
+}
+
+// Symlink implements hackpadfs.SymlinkFS
+func (fs *FS) Symlink(target, name string) error {
+	if !hackpadfs.ValidPath(name) {
+		return &hackpadfs.LinkError{Op: "symlink", Old: target, New: name, Err: hackpadfs.ErrInvalid}
+	}
+	_, err := fs.getFile(name)
+	switch {
+	case err == nil:
+		return &hackpadfs.LinkError{Op: "symlink", Old: target, New: name, Err: hackpadfs.ErrExist}
+	case !errors.Is(err, hackpadfs.ErrNotExist):
+		return &hackpadfs.LinkError{Op: "symlink", Old: target, New: name, Err: err}
+	}
+	if name != "." {
+		_, err = fs.getFile(path.Dir(name))
+		if err != nil {
+			return &hackpadfs.LinkError{Op: "symlink", Old: target, New: name, Err: err}
+		}
+	}
+	f := fs.newSymlink(name, target)
+	if err := f.save(); err != nil {
+		return &hackpadfs.LinkError{Op: "symlink", Old: target, New: name, Err: err}
+	}
+	return nil
+}
+
+// Readlink implements hackpadfs.ReadlinkFS
+func (fs *FS) Readlink(name string) (string, error) {
+	file, err := fs.getFile(name)
+	if err != nil {
+		return "", fs.wrapperErr("readlink", name, err)
+	}
+	if file.Mode()&hackpadfs.ModeSymlink == 0 {
+		return "", fs.wrapperErr("readlink", name, hackpadfs.ErrInvalid)
+	}
+	data, err := file.Data()
+	if err != nil {
+		return "", fs.wrapperErr("readlink", name, err)
+	}
+	return string(data.Bytes()), nil
+}
+
+// resolveSymlinks resolves symlink chains, returning the final non-symlink path.
+func (fs *FS) resolveSymlinks(name string) (string, error) {
+	return fs.resolveSymlinksDepth(name, 0)
+}
+
+func (fs *FS) resolveSymlinksDepth(name string, depth int) (string, error) {
+	if depth > maxSymlinkDepth {
+		return "", hackpadfs.ErrInvalid
+	}
+	file, err := fs.getFile(name)
+	if err != nil {
+		return "", err
+	}
+	if file.Mode()&hackpadfs.ModeSymlink == 0 {
+		return name, nil
+	}
+	data, err := file.Data()
+	if err != nil {
+		return "", err
+	}
+	target := string(data.Bytes())
+	resolved := path.Join(path.Dir(name), target)
+	if !hackpadfs.ValidPath(resolved) {
+		return "", hackpadfs.ErrInvalid
+	}
+	return fs.resolveSymlinksDepth(resolved, depth+1)
+}
+
 // Chmod implements hackpadfs.ChmodFS
 func (fs *FS) Chmod(name string, mode hackpadfs.FileMode) error {
-	file, err := fs.getFile(name)
+	resolvedName, err := fs.resolveSymlinks(name)
+	if err != nil {
+		return fs.wrapperErr("chmod", name, err)
+	}
+	file, err := fs.getFile(resolvedName)
 	if err != nil {
 		return fs.wrapperErr("chmod", name, err)
 	}
@@ -331,7 +489,11 @@ func (fs *FS) Chmod(name string, mode hackpadfs.FileMode) error {
 
 // Chtimes implements hackpadfs.ChtimesFS
 func (fs *FS) Chtimes(name string, _ time.Time, mtime time.Time) error {
-	file, err := fs.getFile(name)
+	resolvedName, err := fs.resolveSymlinks(name)
+	if err != nil {
+		return fs.wrapperErr("chtimes", name, err)
+	}
+	file, err := fs.getFile(resolvedName)
 	if err != nil {
 		return fs.wrapperErr("chtimes", name, err)
 	}
