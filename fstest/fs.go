@@ -1153,9 +1153,10 @@ func TestReadDir(tb testing.TB, o FSOptions) {
 			err := err.(*hackpadfs.PathError)
 			assert.ErrorIs(tb, hackpadfs.ErrNotDir, err)
 			assert.Contains(tb, []string{
-				"fdopendir",  // macOS
+				"fdopendir",  // macOS (older Go)
 				"readdirent", // Linux
 				"readdir",    // Windows
+				"open",       // newer Go versions
 			}, err.Op)
 			o.assertEqualErrPath(tb, "foo", err.Path)
 		}
