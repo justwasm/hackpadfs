@@ -116,6 +116,12 @@ type SymlinkFS interface {
 	Symlink(oldname, newname string) error
 }
 
+// ReadlinkFS is an FS that can read the target of a symlink. Should match the behavior of os.Readlink().
+type ReadlinkFS interface {
+	FS
+	Readlink(name string) (string, error)
+}
+
 // MountFS is an FS that meshes one or more FS's together.
 // Returns the FS for a file located at 'name' and its 'subPath' inside that FS.
 type MountFS interface {
@@ -443,4 +449,12 @@ func Symlink(fs FS, oldname, newname string) error {
 		return fs.Symlink(oldname, newname)
 	}
 	return &LinkError{Op: "symlink", Old: oldname, New: newname, Err: ErrNotImplemented}
+}
+
+// Readlink reads the target of a symlink. Fails with a not implemented error if it's not a ReadlinkFS.
+func Readlink(fs FS, name string) (string, error) {
+	if fs, ok := fs.(ReadlinkFS); ok {
+		return fs.Readlink(name)
+	}
+	return "", &PathError{Op: "readlink", Path: name, Err: ErrNotImplemented}
 }

@@ -215,7 +215,7 @@ var errAborted = idb.NewDOMException("AbortError")
 
 func (s *store) Set(ctx context.Context, name string, record keyvalue.FileRecord) error {
 	var data blob.Blob
-	if record != nil && record.Mode().IsRegular() { // i.e. "should not delete" AND "is a regular file"
+	if record != nil && (record.Mode().IsRegular() || record.Mode()&hackpadfs.ModeSymlink != 0) { // i.e. "should not delete" AND "is a regular file or symlink"
 		var err error
 		data, err = record.Data()
 		if err != nil {

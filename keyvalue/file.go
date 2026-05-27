@@ -82,7 +82,7 @@ func (fs *FS) getFile(path string) (*file, error) {
 // setFile write the 'file' data to the store at 'path'. If 'file' is nil, the file is deleted.
 func (fs *FS) setFile(path string, file FileRecord) error {
 	var contents blob.Blob
-	if file != nil && file.Mode().IsRegular() {
+	if file != nil && (file.Mode().IsRegular() || file.Mode()&hackpadfs.ModeSymlink != 0) {
 		var err error
 		contents, err = file.Data()
 		if err != nil {
@@ -105,8 +105,8 @@ func (fs *FS) setFileTxn(txn Transaction, path string, file FileRecord, contents
 	if !hackpadfs.ValidPath(path) {
 		return hackpadfs.ErrInvalid
 	}
-	if contents == nil && file != nil && file.Mode().IsRegular() {
-		panic("Contents must not be nil for regular file")
+	if contents == nil && file != nil && (file.Mode().IsRegular() || file.Mode()&hackpadfs.ModeSymlink != 0) {
+		panic("Contents must not be nil for regular file or symlink")
 	}
 
 	txn.Set(path, file, contents)
@@ -152,6 +152,24 @@ func (fs *FS) newFile(path string, flag int, mode hackpadfs.FileMode) *file {
 				record: NewBaseFileRecord(0, time.Now(), mode, nil,
 					func() (blob.Blob, error) {
 						return blob.NewBytes(nil), nil
+					},
+					nil,
+				),
+			},
+		},
+	}
+}
+
+func (fs *FS) newSymlink(symlinkPath, target string) *file {
+	targetBytes := []byte(target)
+	return &file{
+		fileData: &fileData{
+			fs:   fs,
+			path: symlinkPath,
+			runOnceFileRecord: runOnceFileRecord{
+				record: NewBaseFileRecord(int64(len(targetBytes)), time.Now(), hackpadfs.ModeSymlink|0777, nil,
+					func() (blob.Blob, error) {
+						return blob.NewBytes(targetBytes), nil
 					},
 					nil,
 				),
@@ -361,7 +379,7 @@ type dirEntry struct {
 }
 
 func newDirEntry(fs hackpadfs.FS, basePath, name string) (*dirEntry, error) {
-	info, err := hackpadfs.Stat(fs, path.Join(basePath, name))
+	info, err := hackpadfs.Lstat(fs, path.Join(basePath, name))
 	return &dirEntry{
 		baseName: name,
 		info:     info,
