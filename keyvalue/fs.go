@@ -196,7 +196,7 @@ func (fs *FS) OpenFile(name string, flag int, perm hackpadfs.FileMode) (hackpadf
 }
 
 func (fs *FS) openFile(name string, flag int, perm hackpadfs.FileMode, depth int) (afFile hackpadfs.File, retErr error) {
-	if depth > maxSymlinkDepth {
+	if depth >= maxSymlinkDepth {
 		return nil, &hackpadfs.PathError{Op: "open", Path: name, Err: hackpadfs.ErrInvalid}
 	}
 	paths := []string{name}
