@@ -463,5 +463,10 @@ func Readlink(fs FS, name string) (string, error) {
 	if fs, ok := fs.(ReadlinkFS); ok {
 		return fs.Readlink(name)
 	}
+	if fs, ok := fs.(MountFS); ok {
+		mountFS, subPath := fs.Mount(name)
+		target, err := Readlink(mountFS, subPath)
+		return target, stripErrPathPrefix(err, name, subPath)
+	}
 	return "", &PathError{Op: "readlink", Path: name, Err: ErrNotImplemented}
 }
