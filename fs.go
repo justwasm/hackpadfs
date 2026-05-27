@@ -122,13 +122,6 @@ type ReadlinkFS interface {
 	Readlink(name string) (string, error)
 }
 
-// LstatFS is an FS that can stat a file or symlink without following symlinks.
-// Should match the behavior of os.Lstat().
-type LstatFS interface {
-	FS
-	Lstat(name string) (FileInfo, error)
-}
-
 // MountFS is an FS that meshes one or more FS's together.
 // Returns the FS for a file located at 'name' and its 'subPath' inside that FS.
 type MountFS interface {
