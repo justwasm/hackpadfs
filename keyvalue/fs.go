@@ -350,25 +350,44 @@ type namedFileInfo struct {
 
 func (n namedFileInfo) Name() string { return n.name }
 
+func normalizePathError(op, name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var pathErr *hackpadfs.PathError
+	if errors.As(err, &pathErr) {
+		return &hackpadfs.PathError{Op: op, Path: name, Err: pathErr.Err}
+	}
+	return err
+}
+
 func (fs *FS) statFollow(name string, depth int) (hackpadfs.FileInfo, error) {
+	return fs.statFollowRequested(name, name, depth)
+}
+
+func (fs *FS) statFollowRequested(name, requested string, depth int) (hackpadfs.FileInfo, error) {
 	if depth > maxSymlinkDepth {
-		return nil, &hackpadfs.PathError{Op: "stat", Path: name, Err: hackpadfs.ErrInvalid}
+		return nil, &hackpadfs.PathError{Op: "stat", Path: requested, Err: hackpadfs.ErrInvalid}
 	}
 	file, err := fs.getFile(name)
 	if err != nil {
-		return nil, fs.wrapperErr("stat", name, err)
+		return nil, fs.wrapperErr("stat", requested, err)
 	}
 	if file.Mode()&hackpadfs.ModeSymlink != 0 {
 		data, err := file.Data()
 		if err != nil {
-			return nil, fs.wrapperErr("stat", name, err)
+			return nil, fs.wrapperErr("stat", requested, err)
 		}
 		target := string(data.Bytes())
 		resolved := path.Join(path.Dir(name), target)
 		if !hackpadfs.ValidPath(resolved) {
-			return nil, &hackpadfs.PathError{Op: "stat", Path: name, Err: hackpadfs.ErrInvalid}
+			return nil, &hackpadfs.PathError{Op: "stat", Path: requested, Err: hackpadfs.ErrInvalid}
 		}
-		return fs.statFollow(resolved, depth+1)
+		info, err := fs.statFollowRequested(resolved, requested, depth+1)
+		if err != nil {
+			return nil, normalizePathError("stat", requested, err)
+		}
+		return info, nil
 	}
 	return file.info(), nil
 }
