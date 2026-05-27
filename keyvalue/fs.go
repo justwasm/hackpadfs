@@ -217,7 +217,8 @@ func (fs *FS) openFile(name string, flag int, perm hackpadfs.FileMode, depth int
 		if !hackpadfs.ValidPath(resolved) {
 			return nil, &hackpadfs.PathError{Op: "open", Path: name, Err: hackpadfs.ErrInvalid}
 		}
-		return fs.openFile(resolved, flag, perm, depth+1)
+		file, openErr := fs.openFile(resolved, flag, perm, depth+1)
+		return file, fs.wrapperErr("open", name, openErr)
 	}
 
 	switch {
