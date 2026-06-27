@@ -51,6 +51,8 @@ type statCache struct {
 	entries map[string]*statCacheEntry
 }
 
+const statCacheMax = 1000
+
 func newStatCache() *statCache {
 	return &statCache{
 		ttl:     500 * time.Millisecond,
@@ -71,13 +73,28 @@ func (c *statCache) get(key string) (hackpadfs.FileInfo, error, bool) {
 func (c *statCache) set(key string, info hackpadfs.FileInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(c.entries) >= statCacheMax {
+		c.purgeExpired()
+	}
 	c.entries[key] = &statCacheEntry{info: info, cachedAt: time.Now()}
 }
 
 func (c *statCache) setErr(key string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(c.entries) >= statCacheMax {
+		c.purgeExpired()
+	}
 	c.entries[key] = &statCacheEntry{err: err, cachedAt: time.Now()}
+}
+
+func (c *statCache) purgeExpired() {
+	now := time.Now()
+	for k, e := range c.entries {
+		if now.Sub(e.cachedAt) > c.ttl {
+			delete(c.entries, k)
+		}
+	}
 }
 
 func (c *statCache) invalidate(key string) {
